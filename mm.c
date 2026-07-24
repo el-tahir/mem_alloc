@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <stdint.h>
 
 #define WSIZE sizeof(size_t) /* size of one header / footer */
 #define DSIZE (2 * WSIZE) /* double word size */
@@ -214,8 +216,6 @@ int mm_init(void) {
     return 0;
 }
 
-
-
 void *mm_malloc(size_t size) {
     if (size == 0)
         return NULL;
@@ -277,4 +277,131 @@ void *mm_realloc(void* ptr, size_t size) {
     mm_free(ptr);
 
     return new_ptr;
+}
+
+int mm_checkheap(int verbose) {
+    // walk physical blocks
+    void *bp = (char *)mem_heap_lo() + (4 * WSIZE); // first payload
+
+    void *prologue_hdr = (char *)mem_heap_lo() + WSIZE;
+    if (GET_SIZE(prologue_hdr) != DSIZE || !GET_ALLOC(prologue_hdr)) {
+        if (verbose) fprintf(stderr, "error: bad prologue header at %p (size: %lu, alloc: %d)\n",
+            prologue_hdr, (unsigned long)GET_SIZE(prologue_hdr), (int)GET_ALLOC(prologue_hdr));
+        return 0;
+    }
+
+    void *prologue_ftr = (char *)mem_heap_lo() + (2 * WSIZE);
+    if (GET_SIZE(prologue_ftr) != DSIZE || !GET_ALLOC(prologue_ftr)) {
+        if (verbose) fprintf(stderr, "error: bad prologue footer at %p (size: %lu, alloc: %d)\n",
+            prologue_ftr, (unsigned long)GET_SIZE(prologue_ftr), (int)GET_ALLOC(prologue_ftr));
+        return 0;
+    }
+
+    int prev_free = 0;
+    int free_blocks_physical_walk = 0;
+
+
+    while (GET_SIZE(HDRP(bp)) > 0) {
+
+        if ((GET_SIZE(HDRP(bp)) != GET_SIZE(FTRP(bp))) ||
+            (GET_ALLOC(HDRP(bp)) != GET_ALLOC(FTRP(bp)))) {
+            if (verbose) fprintf(stderr, "error: header and footer mismatch at block %p "
+                "(header: size %lu, alloc %d | footer: size %lu, alloc %d)\n",
+                bp,
+                (unsigned long)GET_SIZE(HDRP(bp)), (int)GET_ALLOC(HDRP(bp)),
+                (unsigned long)GET_SIZE(FTRP(bp)), (int)GET_ALLOC(FTRP(bp)));
+            return 0;
+        }
+
+        size_t size = GET_SIZE(HDRP(bp));
+
+        if (size % ALIGNMENT != 0) {
+            if (verbose) fprintf(stderr, "error: size is not aligned at block %p (size: %lu)\n",
+                bp, (unsigned long)size);
+            return 0;
+        }
+
+        if ((uintptr_t)bp % ALIGNMENT != 0) {
+            if (verbose) fprintf(stderr, "error: payload pointer is not aligned at %p\n", bp);
+            return 0;
+        }
+
+        if (size < MINBLOCK) {
+            if (verbose) fprintf(stderr, "error: size is less than MINBLOCK at block %p (size: %lu, MINBLOCK: %lu)\n",
+                bp, (unsigned long)size, (unsigned long)MINBLOCK);
+            return 0;
+        }
+
+        if (bp < mem_heap_lo() || bp > mem_heap_hi()) {
+            if (verbose) fprintf(stderr, "error: block %p is outside of valid heap range [%p, %p]\n",
+                bp, mem_heap_lo(), mem_heap_hi());
+            return 0;
+        }
+
+        int current_free = !GET_ALLOC(HDRP(bp));
+
+        if (current_free && prev_free) {
+            if (verbose) fprintf(stderr, "error: consecutive free blocks found at or near block %p\n", bp);
+            return 0;
+        }
+
+        free_blocks_physical_walk += current_free;
+        prev_free = current_free;
+
+        bp = NEXT_BLKP(bp);
+    }
+
+    if (GET_SIZE(HDRP(bp)) != 0 || !GET_ALLOC(HDRP(bp))) {
+        if (verbose) fprintf(stderr, "error: bad epilogue header at %p (size: %lu, alloc: %d)\n",
+            bp, (unsigned long)GET_SIZE(HDRP(bp)), (int)GET_ALLOC(HDRP(bp)));
+        return 0;
+    }
+
+
+    // walk free lists
+    int free_blocks_list_walk = 0;
+
+    for (size_t idx = 0; idx < NUM_CLASSES; idx ++) {
+        void *bp = class_head[idx];
+
+        while (bp != NULL) {
+
+            int size = GET_SIZE(HDRP(bp));
+            void *next = GET_NEXT(bp);
+            void *prev = GET_PREV(bp);
+
+            if (idx != get_class_index(size)) {
+                if (verbose) fprintf(stderr, "error: block in wrong bin\n");
+                return 0;
+            }
+
+            if (GET_ALLOC(HDRP(bp)) != 0) {
+                if (verbose) fprintf(stderr, "error: allocated block in free list\n");
+                return 0;
+            }
+
+            if ((prev == NULL && class_head[idx] != bp) ||
+                (prev != NULL && GET_NEXT(prev) != bp) ||
+                (next != NULL && GET_PREV(next) != bp)) {
+                    if (verbose) fprintf(stderr, "error: wrong links\n");
+                    return 0;
+                }
+
+            free_blocks_list_walk++;
+
+            bp = next;
+        }
+
+    }
+
+    if (free_blocks_physical_walk > free_blocks_list_walk) {
+        if (verbose) fprintf(stderr, "one or more free blocks not in list\n");
+        return 0;
+    } else if (free_blocks_physical_walk < free_blocks_list_walk) {
+        if (verbose) fprintf(stderr, "one or more free blocks in one or more lists\n");
+        return 0;
+    }
+
+    return 1;
+
 }
