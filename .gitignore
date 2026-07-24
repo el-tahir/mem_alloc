@@ -1,2 +1,6 @@
-test
+driver
+mtest
+driver-san
+mtest-san
+*.o
 .claude

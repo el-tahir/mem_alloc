@@ -265,6 +265,28 @@ void *mm_realloc(void* ptr, size_t size) {
     if (oldsize >= asize)
         return ptr;
 
+    /* see if we can grow into the next block if its free */
+    void *next = NEXT_BLKP(ptr);
+    if (!GET_ALLOC(HDRP(next)) && oldsize + GET_SIZE(HDRP(next)) >= asize) {
+        remove_node(next);
+        size_t total = oldsize + GET_SIZE(HDRP(next));
+
+        if (total - asize >= MINBLOCK) {
+            PUT(HDRP(ptr), PACK(asize, 1));
+            PUT(FTRP(ptr), PACK(asize, 1));
+            void *remainder = NEXT_BLKP(ptr);
+            PUT(HDRP(remainder), PACK(total - asize, 0));
+            PUT(FTRP(remainder), PACK(total - asize, 0));
+            insert_node(remainder);
+        } else {
+            PUT(HDRP(ptr), PACK(total, 1));
+            PUT(FTRP(ptr), PACK(total, 1));
+        }
+        return ptr;
+    }
+
+    /* otherwise just get a new block and copy */
+
     void *new_ptr = mm_malloc(size);
     if (new_ptr == NULL)
         return NULL;
