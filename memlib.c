@@ -1,3 +1,11 @@
+/* memlib.c - simulated heap emulation.
+ *
+ * Reserves one fixed-size private region up front and hands it out through a
+ * model of sbrk(), so mm.c can be tested against a heap with known bounds and
+ * no interference from the real allocator. Failures here are the emulator's
+ * own limits (out of region, bad argument), never allocator bugs.
+ */
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,16 +1,31 @@
+/* mm.c - segregated free list allocator.
+ *
+ * Every block carries a matching header and footer holding its size plus an
+ * allocated bit; those boundary tags let a block find its physical neighbours
+ * in O(1), which is what makes immediate coalescing on free possible.
+ *
+ * Free blocks are additionally threaded onto one of NUM_CLASSES doubly linked
+ * lists, bucketed by size, with the link pointers living inside the free
+ * block's own payload (so they cost no extra space). Allocation searches the
+ * class for the requested size and then larger classes, first fit within each.
+ *
+ * The heap is bracketed by an allocated prologue block and a zero-size
+ * allocated epilogue header, which keep coalescing from walking off either end
+ * without needing explicit boundary checks.
+ */
+
 #include "mm.h"
 #include "memlib.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <stdint.h>
 
 #define WSIZE sizeof(size_t) /* size of one header / footer */
 #define DSIZE (2 * WSIZE) /* double word size */
 #define CHUNKSIZE (1UL << 12) /* amount to extend heap by when out of space */
 #define MINBLOCK (4 * WSIZE) /* header + prev + next + footer = 32 */
-#define NUM_CLASSES 9
+#define NUM_CLASSES 9 /* number of size-bucketed free lists; last one is a catch-all */
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -36,6 +51,8 @@
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
 /* ----------- given block pointer bp, find adjacent PHYSICAL blocks --------*/
+/* PREV_BLKP reads the PREVIOUS block's footer (the word before our header) to
+ * learn its size - this is the whole reason blocks carry footers */
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
@@ -59,6 +76,8 @@ static void insert_node(void *bp);
 static void remove_node(void *bp);
 
 
+/* maps a block size to its free list, with class bounds doubling from MINBLOCK
+ * upward; anything past the last bound lands in the final catch-all class */
 static int get_class_index(size_t size) {
     int idx = 0;
     size_t upper = MINBLOCK;
@@ -104,6 +123,9 @@ static void remove_node(void *bp) {
     }
 }
 
+/* merges bp with whichever physical neighbours are free, then inserts the
+ * resulting block into a free list and returns it. callers must NOT insert bp
+ * themselves; the merged block may start earlier than the bp passed in */
 static void *coalesce(void *bp) {
 
     int prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
@@ -143,12 +165,14 @@ static void *coalesce(void *bp) {
 
 }
 
+/* grows the heap by words words (not bytes), reusing the old epilogue slot as
+ * the new block's header and writing a fresh epilogue past it */
 static void *extend_heap(size_t words) {
 
     size_t size = ALIGN(words * WSIZE);
     if (size < MINBLOCK) size = MINBLOCK;
 
-    void *bp = mem_sbrk(size);
+    void *bp = mem_sbrk((int)size);
     if (bp == (void *)-1) return NULL;
 
     PUT(HDRP(bp), PACK(size, 0));
@@ -159,10 +183,11 @@ static void *extend_heap(size_t words) {
 
 }
 
+/* first fit within a class, escalating to larger classes until something fits */
 static void *find_fit(size_t asize) {
 
     for (int idx = get_class_index(asize); idx < NUM_CLASSES; idx++) {
-        for (void *bp = class_head[idx]; bp != NULL; bp = GET_NEXT(bp)){
+        for (void *bp = class_head[idx]; bp != NULL; bp = GET_NEXT(bp)) {
             if (GET_SIZE(HDRP(bp)) >= asize)
                 return bp;
         }
@@ -171,6 +196,8 @@ static void *find_fit(size_t asize) {
     return NULL;
 }
 
+/* marks free block bp allocated at asize bytes, splitting off the leftover as
+ * a new free block when the remainder is big enough to stand on its own */
 static void place(void *bp, size_t asize) {
 
     size_t current_size = GET_SIZE(HDRP(bp));
@@ -223,8 +250,8 @@ void *mm_malloc(size_t size) {
 
     void *bp = find_fit(asize);
     if (bp == NULL) {
-        size_t extendsize = MAX(asize, CHUNKSIZE);
-        bp = extend_heap(extendsize / WSIZE); // extendsize is always a multiple of 8
+        size_t extend_size = MAX(asize, CHUNKSIZE);
+        bp = extend_heap(extend_size / WSIZE); // extend_size is always a multiple of 8
         if (bp == NULL)
             return NULL;
     }
@@ -249,7 +276,7 @@ void mm_free(void *ptr) {
 
 }
 
-void *mm_realloc(void* ptr, size_t size) {
+void *mm_realloc(void *ptr, size_t size) {
 
     if (ptr == NULL)
         return mm_malloc(size);
@@ -259,17 +286,17 @@ void *mm_realloc(void* ptr, size_t size) {
         return NULL;
     }
 
-    size_t oldsize = GET_SIZE(HDRP(ptr));
+    size_t old_size = GET_SIZE(HDRP(ptr));
     size_t asize = MAX(MINBLOCK, ALIGN(size + DSIZE));
 
-    if (oldsize >= asize)
+    if (old_size >= asize)
         return ptr;
 
     /* see if we can grow into the next block if its free */
     void *next = NEXT_BLKP(ptr);
-    if (!GET_ALLOC(HDRP(next)) && oldsize + GET_SIZE(HDRP(next)) >= asize) {
+    if (!GET_ALLOC(HDRP(next)) && old_size + GET_SIZE(HDRP(next)) >= asize) {
         remove_node(next);
-        size_t total = oldsize + GET_SIZE(HDRP(next));
+        size_t total = old_size + GET_SIZE(HDRP(next));
 
         if (total - asize >= MINBLOCK) {
             PUT(HDRP(ptr), PACK(asize, 1));
@@ -291,15 +318,18 @@ void *mm_realloc(void* ptr, size_t size) {
     if (new_ptr == NULL)
         return NULL;
 
-    size_t copysize = oldsize - DSIZE;
-    copysize = MIN(copysize, size);
+    size_t copy_size = old_size - DSIZE;
+    copy_size = MIN(copy_size, size);
 
-    memcpy(new_ptr, ptr, copysize);
+    memcpy(new_ptr, ptr, copy_size);
     mm_free(ptr);
 
     return new_ptr;
 }
 
+/* two independent walks - once over physical blocks, once over the free lists -
+ * and then a cross-check that both agree on how many free blocks exist, which
+ * is what catches a block that was dropped from or double-linked into a list */
 int mm_checkheap(int verbose) {
     // walk physical blocks
     void *bp = (char *)mem_heap_lo() + (4 * WSIZE); // first payload
@@ -382,35 +412,35 @@ int mm_checkheap(int verbose) {
     // walk free lists
     int free_blocks_list_walk = 0;
 
-    for (size_t idx = 0; idx < NUM_CLASSES; idx ++) {
-        void *bp = class_head[idx];
+    for (size_t idx = 0; idx < NUM_CLASSES; idx++) {
+        void *fbp = class_head[idx];
 
-        while (bp != NULL) {
+        while (fbp != NULL) {
 
-            int size = GET_SIZE(HDRP(bp));
-            void *next = GET_NEXT(bp);
-            void *prev = GET_PREV(bp);
+            size_t size = GET_SIZE(HDRP(fbp));
+            void *next = GET_NEXT(fbp);
+            void *prev = GET_PREV(fbp);
 
             if ((int)idx != get_class_index(size)) {
                 if (verbose) fprintf(stderr, "error: block in wrong bin\n");
                 return 0;
             }
 
-            if (GET_ALLOC(HDRP(bp)) != 0) {
+            if (GET_ALLOC(HDRP(fbp)) != 0) {
                 if (verbose) fprintf(stderr, "error: allocated block in free list\n");
                 return 0;
             }
 
-            if ((prev == NULL && class_head[idx] != bp) ||
-                (prev != NULL && GET_NEXT(prev) != bp) ||
-                (next != NULL && GET_PREV(next) != bp)) {
-                    if (verbose) fprintf(stderr, "error: wrong links\n");
-                    return 0;
-                }
+            if ((prev == NULL && class_head[idx] != fbp) ||
+                (prev != NULL && GET_NEXT(prev) != fbp) ||
+                (next != NULL && GET_PREV(next) != fbp)) {
+                if (verbose) fprintf(stderr, "error: wrong links\n");
+                return 0;
+            }
 
             free_blocks_list_walk++;
 
-            bp = next;
+            fbp = next;
         }
 
     }

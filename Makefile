@@ -6,30 +6,30 @@ COMMON  := mm.c memlib.c
 
 .PHONY: all clean test test-san
 
-all: driver mtest
+all: test_trace test_random
 
-driver: driver.c $(COMMON) mm.h memlib.h
-	$(CC) $(CFLAGS) -o $@ driver.c $(COMMON)
+test_trace: test_trace.c $(COMMON) mm.h memlib.h
+	$(CC) $(CFLAGS) -o $@ test_trace.c $(COMMON)
 
-mtest: mtest.c $(COMMON) mm.h memlib.h
-	$(CC) $(CFLAGS) -o $@ mtest.c $(COMMON)
+test_random: test_random.c $(COMMON) mm.h memlib.h
+	$(CC) $(CFLAGS) -o $@ test_random.c $(COMMON)
 
 # sanitizer builds
-driver-san: driver.c $(COMMON) mm.h memlib.h
-	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ driver.c $(COMMON)
+test_trace-san: test_trace.c $(COMMON) mm.h memlib.h
+	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ test_trace.c $(COMMON)
 
-mtest-san: mtest.c $(COMMON) mm.h memlib.h
-	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ mtest.c $(COMMON)
+test_random-san: test_random.c $(COMMON) mm.h memlib.h
+	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ test_random.c $(COMMON)
 
-# run the smoke test and a few mtest seeds
-test: driver mtest
-	./driver
-	@for s in 0 1 2 42 1337; do ./mtest $$s; done
+# run the smoke test and a few test_random seeds
+test: test_trace test_random
+	./test_trace
+	@for s in 0 1 2 42 1337; do ./test_random $$s; done
 
 # same under ASan/UBSan
-test-san: driver-san mtest-san
-	./driver-san
-	@for s in 0 1 2 42 1337; do ./mtest-san $$s; done
+test-san: test_trace-san test_random-san
+	./test_trace-san
+	@for s in 0 1 2 42 1337; do ./test_random-san $$s; done
 
 clean:
-	rm -f driver mtest driver-san mtest-san
+	rm -f test_trace test_random test_trace-san test_random-san

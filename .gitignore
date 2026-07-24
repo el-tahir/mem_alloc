@@ -1,6 +1,7 @@
-driver
-mtest
-driver-san
-mtest-san
+test_trace
+test_random
+test_trace-san
+test_random-san
 *.o
 .claude
+.clangd

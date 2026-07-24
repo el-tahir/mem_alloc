@@ -1,5 +1,12 @@
+/* test_trace.c - deterministic smoke test.
+ *
+ * Replays one small hand-written trace of malloc/free/realloc operations and
+ * asserts alignment and payload preservation after each. Fixed and readable by
+ * design: when this fails the failing operation is obvious, which makes it the
+ * first thing to run before the randomized test in test_random.c.
+ */
+
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include "memlib.h"
@@ -67,34 +74,34 @@ int main(void) {
                 break;
             }
             case OP_REALLOC: {
-                size_t oldsize = sizes[t.id];
-                size_t newsize = t.size;
+                size_t old_size = sizes[t.id];
+                size_t new_size = t.size;
 
-                void *oldptr = ptrs[t.id];
+                void *old_ptr = ptrs[t.id];
 
-                void *newptr = mm_realloc(oldptr, newsize);
+                void *new_ptr = mm_realloc(old_ptr, new_size);
 
-                if (newsize == 0) { //free
-                    assert(newptr == NULL);
+                if (new_size == 0) { //free
+                    assert(new_ptr == NULL);
                     ptrs[t.id] = NULL;
                     sizes[t.id] = 0;
                 } else {
-                    assert(newptr != NULL);
-                    assert(((size_t)newptr % 8) == 0);
+                    assert(new_ptr != NULL);
+                    assert(((size_t)new_ptr % 8) == 0);
 
-                    /* verify old contents were preserved up to min(oldsize, newsize) */
+                    /* verify old contents were preserved up to min(old_size, new_size) */
 
-                    size_t copysize = oldsize < newsize ? oldsize : newsize;
+                    size_t copy_size = old_size < new_size ? old_size : new_size;
                     unsigned char expected = (unsigned char)(t.id & 0xFF);
-                    for (size_t i = 0; i < copysize; i++) {
-                        assert(((unsigned char *)newptr)[i] == expected);
+                    for (size_t j = 0; j < copy_size; j++) {
+                        assert(((unsigned char *)new_ptr)[j] == expected);
                     }
                     /* fill the block with the pattern again,
-                     * in case newsize > oldsize
+                     * in case new_size > old_size
                      */
-                    memset(newptr, expected, newsize);
-                    ptrs[t.id] = newptr;
-                    sizes[t.id] = newsize;
+                    memset(new_ptr, expected, new_size);
+                    ptrs[t.id] = new_ptr;
+                    sizes[t.id] = new_size;
                 }
                 break;
             }
