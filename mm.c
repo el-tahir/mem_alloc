@@ -16,7 +16,6 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 /* ------------- Alignment -------------- */
-#define ALIGNMENT 8UL
 #define ALIGN_MASK (ALIGNMENT - 1)
 #define ALIGN(size) (((size) + ALIGN_MASK) & ~ALIGN_MASK)
 
@@ -370,7 +369,7 @@ int mm_checkheap(int verbose) {
             void *next = GET_NEXT(bp);
             void *prev = GET_PREV(bp);
 
-            if (idx != get_class_index(size)) {
+            if ((int)idx != get_class_index(size)) {
                 if (verbose) fprintf(stderr, "error: block in wrong bin\n");
                 return 0;
             }

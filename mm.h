@@ -1,4 +1,7 @@
 #include <stddef.h>
+
+#define ALIGNMENT 8UL
+
 int mm_init(void);
 
 void *mm_malloc(size_t size);
